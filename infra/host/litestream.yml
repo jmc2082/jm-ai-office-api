@@ -1,0 +1,12 @@
+# Continuous SQLite replication to S3. Credentials come from the instance role.
+# $BUCKET and $AWS_REGION are set by docker-compose.yml.
+dbs:
+  - path: /data/office.db
+    replicas:
+      - type: s3
+        bucket: $BUCKET
+        path: litestream/office.db
+        region: $AWS_REGION
+        # Point-in-time restore window, and a fresh snapshot each day so restores stay fast.
+        retention: 168h
+        snapshot-interval: 24h

@@ -1,0 +1,8 @@
+# TLS certificates are issued automatically by Let's Encrypt for API_DOMAIN.
+# There is no access log on purpose: the SSE route carries the access token in its
+# query string (?access_token=), and request logs would record it.
+# No `encode` either: compression can buffer the SSE stream.
+
+{$API_DOMAIN} {
+	reverse_proxy api:4100
+}

@@ -1,0 +1,25 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Account-wide GitHub Actions OIDC identity provider. An account can only have one, so it lives in its own stack that any project's deploy role can reference.",
+  "Resources": {
+    "GitHubOidcProvider": {
+      "Type": "AWS::IAM::OIDCProvider",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "Url": "https://token.actions.githubusercontent.com",
+        "ClientIdList": ["sts.amazonaws.com"],
+        "ThumbprintList": [
+          "6938fd4d98bab03faadb97b34396831e3780aea1",
+          "1c58a3a8518e8759bf075b76b750d4f2df264fcd"
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "ProviderArn": {
+      "Value": { "Ref": "GitHubOidcProvider" },
+      "Export": { "Name": "github-oidc-ProviderArn" }
+    }
+  }
+}

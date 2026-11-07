@@ -1,5 +1,5 @@
-# Phase 0 image. Phase 1 switches the runtime base to the Playwright arm64 image
-# (mcr.microsoft.com/playwright) so workers can drive browsers.
+# Phase 0 image. Phase 1 switches the runtime base to the Playwright image
+# (mcr.microsoft.com/playwright, amd64 to match the t3 box) so workers can drive browsers.
 
 FROM node:24-bookworm-slim AS build
 WORKDIR /app

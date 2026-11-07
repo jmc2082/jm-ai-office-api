@@ -1,0 +1,37 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "JM Office: Route 53 hosted zone for the office subdomain. The parent domain stays at Namecheap; add this zone's 4 name servers there as NS records for the subdomain host.",
+  "Parameters": {
+    "ZoneName": {
+      "Type": "String",
+      "Default": "office.wikiboost.com",
+      "Description": "Subdomain delegated from Namecheap to Route 53"
+    }
+  },
+  "Resources": {
+    "HostedZone": {
+      "Type": "AWS::Route53::HostedZone",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "Name": { "Ref": "ZoneName" },
+        "HostedZoneConfig": { "Comment": "JM Office of AI Workers (delegated from Namecheap)" },
+        "HostedZoneTags": [{ "Key": "Project", "Value": "jm-office" }]
+      }
+    }
+  },
+  "Outputs": {
+    "HostedZoneId": {
+      "Value": { "Ref": "HostedZone" },
+      "Export": { "Name": "jm-office-HostedZoneId" }
+    },
+    "ZoneName": {
+      "Value": { "Ref": "ZoneName" },
+      "Export": { "Name": "jm-office-ZoneName" }
+    },
+    "NameServers": {
+      "Description": "Add each of these in Namecheap > Advanced DNS as an NS record with host 'office'",
+      "Value": { "Fn::Join": [", ", { "Fn::GetAtt": ["HostedZone", "NameServers"] }] }
+    }
+  }
+}

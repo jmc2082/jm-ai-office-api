@@ -1,0 +1,500 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "JM Office: the EC2 box (Docker: Caddy + NestJS API + Litestream, SQLite on disk), its network, Elastic IP and DNS record, the app's non-secret SSM settings, the deploy command, and the GitHub Actions deploy role. Requires the jm-office-dns, jm-office-data, jm-office-auth and github-oidc stacks.",
+  "Metadata": {
+    "cfn-lint": { "config": { "ignore_checks": ["W6001"] } },
+    "Notes": [
+      "ImageId is pinned on purpose. Changing it replaces the instance (new disk); the database comes back from S3 through Litestream on first start.",
+      "InstanceType can change within the same architecture (t3.*) as a stop/start. Moving to ARM (t4g.*) needs an arm64 AMI and an arm64 image build.",
+      "UserData runs only on an instance's first boot. Changing it later stops/starts the box but does not re-run it.",
+      "The instance gets a temporary public IP at launch so the bootstrap can reach the internet and signal CloudFormation; the Elastic IP replaces it once the instance is up.",
+      "After the instance is replaced, re-run the GitHub 'Deploy API' workflow to start the app on the new box."
+    ]
+  },
+  "Parameters": {
+    "InstanceType": {
+      "Type": "String",
+      "Default": "t3.micro",
+      "AllowedValues": ["t3.micro", "t3.small", "t3.medium"],
+      "Description": "x86 only, to match the amd64 AMI and image build"
+    },
+    "ImageId": {
+      "Type": "AWS::EC2::Image::Id",
+      "Description": "Ubuntu 26.04 LTS amd64 AMI. Get the current one with: ./deploy.sh ami"
+    },
+    "RootVolumeSize": {
+      "Type": "Number",
+      "Default": 20,
+      "MinValue": 10,
+      "Description": "Root gp3 volume in GiB"
+    },
+    "ApiDomain": {
+      "Type": "String",
+      "Default": "api.office.wikiboost.com"
+    },
+    "KeyPairName": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Optional. Leave empty to use SSM Session Manager only (no SSH port is opened either way)."
+    },
+    "ParamPrefix": {
+      "Type": "String",
+      "Default": "/jm-office/prod",
+      "Description": "SSM prefix. <prefix>/app/* becomes the API container's environment."
+    },
+    "AiMode": {
+      "Type": "String",
+      "Default": "mock",
+      "AllowedValues": ["mock", "live"],
+      "Description": "live also needs the <prefix>/app/ANTHROPIC_API_KEY SecureString"
+    },
+    "CorsOrigins": {
+      "Type": "String",
+      "Default": "https://office.wikiboost.com",
+      "Description": "Comma-separated origins allowed to call the API"
+    },
+    "QueueConcurrency": {
+      "Type": "Number",
+      "Default": 1,
+      "MinValue": 1,
+      "MaxValue": 4
+    },
+    "GitHubRepo": {
+      "Type": "String",
+      "Default": "jmc2082/jm-ai-office-api",
+      "Description": "owner/name of the repo allowed to deploy"
+    },
+    "DeployBranch": {
+      "Type": "String",
+      "Default": "main",
+      "Description": "Only workflows running on this branch can assume the deploy role"
+    }
+  },
+  "Conditions": {
+    "HasKeyPair": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "KeyPairName" }, ""] }] }
+  },
+  "Resources": {
+    "Vpc": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.40.0.0/16",
+        "EnableDnsSupport": true,
+        "EnableDnsHostnames": true,
+        "Tags": [{ "Key": "Name", "Value": "jm-office" }]
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": { "Tags": [{ "Key": "Name", "Value": "jm-office" }] }
+    },
+    "GatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": { "Ref": "Vpc" },
+        "InternetGatewayId": { "Ref": "InternetGateway" }
+      }
+    },
+    "PublicSubnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": { "Ref": "Vpc" },
+        "CidrBlock": "10.40.1.0/24",
+        "AvailabilityZone": { "Fn::Select": [0, { "Fn::GetAZs": "" }] },
+        "MapPublicIpOnLaunch": true,
+        "Tags": [{ "Key": "Name", "Value": "jm-office-public" }]
+      }
+    },
+    "RouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": { "Ref": "Vpc" },
+        "Tags": [{ "Key": "Name", "Value": "jm-office-public" }]
+      }
+    },
+    "DefaultRoute": {
+      "Type": "AWS::EC2::Route",
+      "DependsOn": "GatewayAttachment",
+      "Properties": {
+        "RouteTableId": { "Ref": "RouteTable" },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": { "Ref": "InternetGateway" }
+      }
+    },
+    "SubnetRouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": { "Ref": "PublicSubnet" },
+        "RouteTableId": { "Ref": "RouteTable" }
+      }
+    },
+    "SecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "JM Office API: HTTP (Lets Encrypt + redirect) and HTTPS only. No SSH; use SSM Session Manager.",
+        "VpcId": { "Ref": "Vpc" },
+        "SecurityGroupIngress": [
+          { "IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "CidrIp": "0.0.0.0/0", "Description": "HTTP" },
+          { "IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "CidrIp": "0.0.0.0/0", "Description": "HTTPS" },
+          { "IpProtocol": "udp", "FromPort": 443, "ToPort": 443, "CidrIp": "0.0.0.0/0", "Description": "HTTP/3" }
+        ],
+        "Tags": [{ "Key": "Name", "Value": "jm-office-api" }]
+      }
+    },
+    "InstanceRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": { "Fn::Sub": "jm-office-instance-${AWS::Region}" },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            { "Effect": "Allow", "Principal": { "Service": "ec2.amazonaws.com" }, "Action": "sts:AssumeRole" }
+          ]
+        },
+        "ManagedPolicyArns": [{ "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore" }],
+        "Policies": [
+          {
+            "PolicyName": "jm-office-instance",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "ListBucket",
+                  "Effect": "Allow",
+                  "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+                  "Resource": { "Fn::ImportValue": "jm-office-BucketArn" }
+                },
+                {
+                  "Sid": "LitestreamReplica",
+                  "Effect": "Allow",
+                  "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+                  "Resource": { "Fn::Sub": ["${Arn}/litestream/*", { "Arn": { "Fn::ImportValue": "jm-office-BucketArn" } }] }
+                },
+                {
+                  "Sid": "ReadReleaseBundles",
+                  "Effect": "Allow",
+                  "Action": "s3:GetObject",
+                  "Resource": { "Fn::Sub": ["${Arn}/releases/*", { "Arn": { "Fn::ImportValue": "jm-office-BucketArn" } }] }
+                },
+                {
+                  "Sid": "ReadAppSettings",
+                  "Effect": "Allow",
+                  "Action": ["ssm:GetParametersByPath", "ssm:GetParameters", "ssm:GetParameter"],
+                  "Resource": [
+                    { "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ParamPrefix}" },
+                    { "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ParamPrefix}/*" }
+                  ]
+                },
+                {
+                  "Sid": "EcrLogin",
+                  "Effect": "Allow",
+                  "Action": "ecr:GetAuthorizationToken",
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "EcrPull",
+                  "Effect": "Allow",
+                  "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
+                  "Resource": { "Fn::ImportValue": "jm-office-ApiRepositoryArn" }
+                },
+                {
+                  "Sid": "SignalBootstrap",
+                  "Effect": "Allow",
+                  "Action": "cloudformation:SignalResource",
+                  "Resource": { "Ref": "AWS::StackId" }
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [{ "Key": "Project", "Value": "jm-office" }]
+      }
+    },
+    "InstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": { "Roles": [{ "Ref": "InstanceRole" }] }
+    },
+    "LaunchTemplate": {
+      "Type": "AWS::EC2::LaunchTemplate",
+      "Metadata": {
+        "Note": "Only holds settings AWS::EC2::Instance can't set itself. Changing it replaces the instance, so keep everything else on the instance."
+      },
+      "Properties": {
+        "LaunchTemplateData": {
+          "MetadataOptions": {
+            "HttpEndpoint": "enabled",
+            "HttpTokens": "required",
+            "HttpPutResponseHopLimit": 2
+          }
+        }
+      }
+    },
+    "Instance": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn": ["DefaultRoute", "SubnetRouteTableAssociation"],
+      "CreationPolicy": { "ResourceSignal": { "Count": 1, "Timeout": "PT20M" } },
+      "Properties": {
+        "LaunchTemplate": {
+          "LaunchTemplateId": { "Ref": "LaunchTemplate" },
+          "Version": { "Fn::GetAtt": ["LaunchTemplate", "LatestVersionNumber"] }
+        },
+        "ImageId": { "Ref": "ImageId" },
+        "InstanceType": { "Ref": "InstanceType" },
+        "IamInstanceProfile": { "Ref": "InstanceProfile" },
+        "SubnetId": { "Ref": "PublicSubnet" },
+        "SecurityGroupIds": [{ "Ref": "SecurityGroup" }],
+        "KeyName": { "Fn::If": ["HasKeyPair", { "Ref": "KeyPairName" }, { "Ref": "AWS::NoValue" }] },
+        "CreditSpecification": { "CPUCredits": "standard" },
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/sda1",
+            "Ebs": {
+              "VolumeType": "gp3",
+              "VolumeSize": { "Ref": "RootVolumeSize" },
+              "Encrypted": true,
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "\n",
+              [
+                "#!/bin/bash",
+                "# First-boot bootstrap: Docker, AWS CLI, swap, folders. The app itself is started by the deploy command.",
+                "set -euxo pipefail",
+                "exec > >(tee -a /var/log/jm-office-bootstrap.log) 2>&1",
+                { "Fn::Sub": "REGION=${AWS::Region}" },
+                { "Fn::Sub": "STACK=${AWS::StackName}" },
+                "INSTANCE_ID=$(cat /var/lib/cloud/data/instance-id)",
+                "signal() { /usr/local/bin/aws cloudformation signal-resource --region \"$REGION\" --stack-name \"$STACK\" --logical-resource-id Instance --unique-id \"$INSTANCE_ID\" --status \"$1\" || true; }",
+                "trap 'signal FAILURE' ERR",
+                "export DEBIAN_FRONTEND=noninteractive",
+                "apt-get -o Acquire::Retries=5 update",
+                "apt-get -o Acquire::Retries=5 install -y docker.io docker-compose-v2 jq unzip curl",
+                "curl -fsSL --retry 5 \"https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip\" -o /tmp/awscliv2.zip",
+                "unzip -q /tmp/awscliv2.zip -d /tmp",
+                "/tmp/aws/install --update",
+                "rm -rf /tmp/aws /tmp/awscliv2.zip",
+                "if [ ! -f /swapfile ]; then fallocate -l 2G /swapfile; chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile; echo '/swapfile none swap sw 0 0' >> /etc/fstab; fi",
+                "echo 'vm.swappiness=10' > /etc/sysctl.d/99-jm-office.conf",
+                "sysctl --system",
+                "mkdir -p /etc/docker",
+                "echo '{\"log-driver\":\"json-file\",\"log-opts\":{\"max-size\":\"10m\",\"max-file\":\"3\"}}' > /etc/docker/daemon.json",
+                "systemctl enable docker",
+                "systemctl restart docker",
+                "install -d -m 755 /opt/jm-office /opt/jm-office/releases",
+                "install -d -m 700 /opt/jm-office/shared",
+                "install -d -o 1000 -g 1000 -m 750 /opt/jm-office/data",
+                "signal SUCCESS",
+                ""
+              ]
+            ]
+          }
+        },
+        "Tags": [{ "Key": "Name", "Value": "jm-office-api" }]
+      }
+    },
+    "ElasticIp": {
+      "Type": "AWS::EC2::EIP",
+      "DependsOn": "GatewayAttachment",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [{ "Key": "Name", "Value": "jm-office-api" }]
+      }
+    },
+    "ElasticIpAssociation": {
+      "Type": "AWS::EC2::EIPAssociation",
+      "Properties": {
+        "AllocationId": { "Fn::GetAtt": ["ElasticIp", "AllocationId"] },
+        "InstanceId": { "Ref": "Instance" }
+      }
+    },
+    "ApiRecord": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "HostedZoneId": { "Fn::ImportValue": "jm-office-HostedZoneId" },
+        "Name": { "Ref": "ApiDomain" },
+        "Type": "A",
+        "TTL": "300",
+        "ResourceRecords": [{ "Ref": "ElasticIp" }]
+      }
+    },
+    "AiModeParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": { "Fn::Sub": "${ParamPrefix}/app/AI_MODE" },
+        "Type": "String",
+        "Value": { "Ref": "AiMode" }
+      }
+    },
+    "CorsOriginsParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": { "Fn::Sub": "${ParamPrefix}/app/CORS_ORIGINS" },
+        "Type": "String",
+        "Value": { "Ref": "CorsOrigins" }
+      }
+    },
+    "QueueConcurrencyParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": { "Fn::Sub": "${ParamPrefix}/app/QUEUE_CONCURRENCY" },
+        "Type": "String",
+        "Value": { "Ref": "QueueConcurrency" }
+      }
+    },
+    "SchedulerEnabledParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": { "Fn::Sub": "${ParamPrefix}/app/SCHEDULER_ENABLED" },
+        "Type": "String",
+        "Value": "true"
+      }
+    },
+    "DeployDocument": {
+      "Type": "AWS::SSM::Document",
+      "Properties": {
+        "Name": "jm-office-deploy",
+        "DocumentType": "Command",
+        "UpdateMethod": "NewVersion",
+        "Content": {
+          "schemaVersion": "2.2",
+          "description": "Deploy a JM Office API release: fetch its bundle from S3 and run its deploy.sh.",
+          "parameters": {
+            "ReleaseTag": {
+              "type": "String",
+              "description": "Git commit SHA; also the image tag",
+              "allowedPattern": "^[0-9a-f]{7,40}$"
+            }
+          },
+          "mainSteps": [
+            {
+              "action": "aws:runShellScript",
+              "name": "deploy",
+              "inputs": {
+                "timeoutSeconds": "900",
+                "runCommand": [
+                  "set -eu",
+                  {
+                    "Fn::Sub": [
+                      "export AWS_REGION=${AWS::Region} BUCKET=${Bucket} ECR_REPO_URI=${Repo} API_DOMAIN=${ApiDomain} PARAM_PATH=${ParamPrefix}/app",
+                      {
+                        "Bucket": { "Fn::ImportValue": "jm-office-BucketName" },
+                        "Repo": { "Fn::ImportValue": "jm-office-ApiRepositoryUri" }
+                      }
+                    ]
+                  },
+                  "DIR=/opt/jm-office/releases/{{ReleaseTag}}",
+                  "/usr/local/bin/aws s3 cp --recursive --only-show-errors \"s3://$BUCKET/releases/{{ReleaseTag}}/\" \"$DIR/\"",
+                  "bash \"$DIR/deploy.sh\" {{ReleaseTag}}"
+                ]
+              }
+            }
+          ]
+        },
+        "Tags": [{ "Key": "Project", "Value": "jm-office" }]
+      }
+    },
+    "DeployRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": { "Fn::Sub": "jm-office-github-deploy-${AWS::Region}" },
+        "Description": "Assumed by GitHub Actions (OIDC) to push the API image and run the deploy command",
+        "MaxSessionDuration": 3600,
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Federated": { "Fn::ImportValue": "github-oidc-ProviderArn" } },
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                  "token.actions.githubusercontent.com:sub": { "Fn::Sub": "repo:${GitHubRepo}:ref:refs/heads/${DeployBranch}" }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "jm-office-deploy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "ReadStackOutputs",
+                  "Effect": "Allow",
+                  "Action": "cloudformation:DescribeStacks",
+                  "Resource": { "Ref": "AWS::StackId" }
+                },
+                {
+                  "Sid": "EcrLogin",
+                  "Effect": "Allow",
+                  "Action": "ecr:GetAuthorizationToken",
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "EcrPush",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:BatchGetImage",
+                    "ecr:CompleteLayerUpload",
+                    "ecr:DescribeImages",
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:InitiateLayerUpload",
+                    "ecr:PutImage",
+                    "ecr:UploadLayerPart"
+                  ],
+                  "Resource": { "Fn::ImportValue": "jm-office-ApiRepositoryArn" }
+                },
+                {
+                  "Sid": "UploadReleaseBundles",
+                  "Effect": "Allow",
+                  "Action": "s3:PutObject",
+                  "Resource": { "Fn::Sub": ["${Arn}/releases/*", { "Arn": { "Fn::ImportValue": "jm-office-BucketArn" } }] }
+                },
+                {
+                  "Sid": "RunDeployCommand",
+                  "Effect": "Allow",
+                  "Action": "ssm:SendCommand",
+                  "Resource": [
+                    { "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/${DeployDocument}" },
+                    { "Fn::Sub": "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Instance}" }
+                  ]
+                },
+                {
+                  "Sid": "ReadDeployResult",
+                  "Effect": "Allow",
+                  "Action": ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [{ "Key": "Project", "Value": "jm-office" }]
+      }
+    }
+  },
+  "Outputs": {
+    "InstanceId": { "Value": { "Ref": "Instance" } },
+    "PublicIp": { "Value": { "Ref": "ElasticIp" } },
+    "ApiUrl": { "Value": { "Fn::Sub": "https://${ApiDomain}/api" } },
+    "ApiDomain": { "Value": { "Ref": "ApiDomain" } },
+    "DeployDocumentName": { "Value": { "Ref": "DeployDocument" } },
+    "DeployRoleArn": {
+      "Description": "Set as the GitHub repo variable AWS_DEPLOY_ROLE_ARN",
+      "Value": { "Fn::GetAtt": ["DeployRole", "Arn"] }
+    },
+    "ApiRepositoryUri": { "Value": { "Fn::ImportValue": "jm-office-ApiRepositoryUri" } },
+    "BucketName": { "Value": { "Fn::ImportValue": "jm-office-BucketName" } },
+    "SessionCommand": {
+      "Description": "Open a shell on the box",
+      "Value": { "Fn::Sub": "aws ssm start-session --target ${Instance} --region ${AWS::Region}" }
+    }
+  }
+}

@@ -2,8 +2,8 @@
 
 Owner: Joshua Mackey
 Created: 2026-11-02
-Updated: 2026-11-03
-Status: Phase 0a + 0b done (local API + dashboard) → Phase 0c (deploy)
+Updated: 2026-11-05
+Status: Phase 0a + 0b done (local API + dashboard) → Phase 0c (deploy): CloudFormation templates written, not yet deployed
 
 A personal, **project-agnostic** worker platform that automates the repeatable parts of my engineering week. These include testing, releases, inbox triage, analytics, email marketing, social and support. Narrow AI "workers" run on a schedule and surface anything consequential as a card for me to approve.
 
@@ -30,7 +30,7 @@ It is a generic system and not tied to any one client or codebase. Projects are 
 | Frontend | Vue 3 + TypeScript, Composition API (`<script setup>`), Pinia, Vue Router | Deployed to **AWS Amplify** from git |
 | UI | Tailwind CSS v4 (`@tailwindcss/vite`) + Flowbite (plugin + component classes) | Avoid `flowbite-vue`; it lags core |
 | Auth | **Amazon Cognito** user pool (single user) | JWT validated by a Nest guard on every request; dev bypass locally |
-| API + workers | **NestJS** (TypeScript) | Docker on a single **EC2 t4g.small** (ARM) |
+| API + workers | **NestJS** (TypeScript) | Docker on a single **EC2 t3.micro** (x86, us-east-2); see `planning/aws-cloudformation-planning/` |
 | Scheduling | `@nestjs/schedule` | Cron lives in code, versioned with the workers |
 | Job queue | In-process queue, concurrency 1–2 | Keeps Playwright / Claude Code runs from starving the box |
 | Live updates | **Server-Sent Events** from Nest | One-way feed for Happening Now, stats and Needs You |
@@ -73,7 +73,7 @@ It is a generic system and not tied to any one client or codebase. Projects are 
                 └──────────────┬───────────────┘
                                │ HTTPS + Cognito JWT  (REST + SSE)
                 ┌──────────────▼───────────────┐
-                │  EC2 t4g.small (Docker)      │
+                │  EC2 t3.micro (Docker)       │
                 │  ┌────────┐  ┌────────────┐  │
                 │  │ Caddy  │→ │  NestJS    │  │
                 │  └────────┘  │  API + SSE │  │
@@ -196,9 +196,9 @@ jm-ai-office-of-workers/                # local workspace folder (not a repo)
             ├── drizzle/                # SQL migrations
             ├── cli/                    # `needs`: list/approve/reject from terminal (Phase 0c)
             ├── infra/                  # Phase 0c
-            │   ├── docker-compose.yml  # api, caddy, litestream
-            │   ├── Caddyfile
-            │   └── litestream.yml
+            │   ├── cloudformation/     # github-oidc, dns, data, auth, server stacks (JSON) + deploy.sh
+            │   └── host/               # docker-compose.yml, Caddyfile, litestream.yml, deploy.sh (runs on the box)
+            ├── .github/workflows/      # deploy.yml: test → build → ECR → SSM deploy
             ├── Dockerfile
             └── drizzle.config.ts
 ```
@@ -228,7 +228,7 @@ Phases after Phase 0 are a menu, not a fixed schedule. Each one adds one or two 
 - **Status: done (2026-11-04).** Also includes Cost view, worker profile, run detail, light/dark theme, mobile layout. API default port moved to 4100 (3000 is commonly taken by other dev servers).
 
 **0c: Deploy**
-- Provision EC2 t4g.small, Docker Compose, Caddy, Litestream → S3.
+- Provision EC2 t3.micro (us-east-2), Docker Compose, Caddy, Litestream → S3, all via CloudFormation (`infra/cloudformation/`). Plan: `planning/aws-cloudformation-planning/ec2-cloudformation-plan.md`.
 - Cognito user pool and the Nest JWT guard.
 - Dedicated Anthropic API key with a **Console spend cap**.
 - Amplify hosting for the frontend.
@@ -288,7 +288,7 @@ Phases after Phase 0 are a menu, not a fixed schedule. Each one adds one or two 
 
 | Item | Estimate / month | Notes |
 |---|---|---|
-| EC2 t4g.small + EBS | ~$12–18 | Main fixed cost |
+| EC2 t3.micro + EBS + Elastic IP + Route 53 zone | ~$13.50 | Main fixed cost (free tier has ended on this account) |
 | S3 (Litestream) | < $1 | |
 | Amplify hosting | ~$0–5 | Low traffic |
 | Cognito | $0 | Free at one user |
@@ -306,7 +306,7 @@ Review the Cost view weekly. Any worker whose cost outweighs the time it saves g
 | Trigger | Move to |
 |---|---|
 | Need for multiple API instances or concurrent writers | **Postgres** (`jsonb` for payloads), Drizzle dialect swap |
-| Box memory pressure (Playwright + API) | t4g.medium, or move Playwright runs fully to GitHub Actions |
+| Box memory pressure (Playwright + API) | t3.small / t3.medium (in-place resize), or move Playwright runs fully to GitHub Actions |
 | Queue backlog regularly delays scheduled runs | Raise concurrency, then a separate worker process, then SQS |
 | One worker needs independent scale or a public webhook | Extract that worker to Lambda |
 | A card category has sustained approval with no edits | Explicit config flag allowing auto-execution for that category only |

@@ -6,3 +6,7 @@ coverage
 .env.*
 !.env.example
 *.db*
+.git
+.github
+infra
+planning
