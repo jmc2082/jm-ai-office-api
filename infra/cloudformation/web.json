@@ -94,7 +94,7 @@
                   "Action": ["amplify:CreateDeployment", "amplify:StartDeployment", "amplify:GetJob"],
                   "Resource": [
                     { "Fn::Sub": "${Branch.Arn}" },
-                    { "Fn::Sub": "${Branch.Arn}/jobs/*" }
+                    { "Fn::Sub": "${Branch.Arn}/*" }
                   ]
                 }
               ]
