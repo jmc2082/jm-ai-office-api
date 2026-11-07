@@ -2,6 +2,11 @@
 # (mcr.microsoft.com/playwright, amd64 to match the t3 box) so workers can drive browsers.
 
 FROM node:24-bookworm-slim AS build
+# better-sqlite3 compiles from source when no prebuilt binary matches this Node version.
+# These tools stay in the build stage; the runtime image doesn't need them.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
