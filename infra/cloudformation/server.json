@@ -61,8 +61,8 @@
     },
     "GitHubRepo": {
       "Type": "String",
-      "Default": "jmc2082/jm-ai-office-api",
-      "Description": "owner/name of the repo allowed to deploy"
+      "Default": "jmc2082@4621380/jm-ai-office-api@1447367200",
+      "Description": "Repo allowed to deploy, as it appears in the GitHub OIDC subject. This repo uses immutable subjects (owner@ownerId/name@repoId); see: gh api repos/OWNER/REPO/actions/oidc/customization/sub"
     },
     "DeployBranch": {
       "Type": "String",

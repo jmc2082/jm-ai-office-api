@@ -15,7 +15,7 @@
     "AiMode": "mock",
     "CorsOrigins": "https://office.wikiboost.com",
     "QueueConcurrency": "1",
-    "GitHubRepo": "jmc2082/jm-ai-office-api",
+    "GitHubRepo": "jmc2082@4621380/jm-ai-office-api@1447367200",
     "DeployBranch": "main"
   }
 }
