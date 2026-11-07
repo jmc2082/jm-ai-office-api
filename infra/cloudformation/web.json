@@ -1,0 +1,118 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "JM Office: Amplify hosting for the Vue dashboard at office.wikiboost.com. No Git connection: the frontend repo's GitHub Actions workflow builds the site and uploads it as a manual deployment, signing in through the deploy role below. Requires the jm-office-dns and github-oidc stacks.",
+  "Parameters": {
+    "WebDomain": {
+      "Type": "String",
+      "Default": "office.wikiboost.com",
+      "Description": "Must be the Route 53 zone from jm-office-dns (the site sits at its apex)"
+    },
+    "GitHubRepo": {
+      "Type": "String",
+      "Default": "jmc2082@4621380/jm-ai-office-of-workers@1447396393",
+      "Description": "Frontend repo as it appears in the GitHub OIDC subject (immutable form: owner@ownerId/name@repoId)"
+    },
+    "DeployBranch": {
+      "Type": "String",
+      "Default": "main",
+      "Description": "Git branch allowed to deploy; also the Amplify branch name"
+    }
+  },
+  "Resources": {
+    "App": {
+      "Type": "AWS::Amplify::App",
+      "Properties": {
+        "Name": "jm-office-web",
+        "Description": "JM Office of AI Workers dashboard (deployed from GitHub Actions)",
+        "Platform": "WEB",
+        "CustomRules": [
+          {
+            "Source": "</^[^.]+$|\\.(?!(css|gif|ico|jpg|jpeg|js|json|map|png|svg|txt|webmanifest|webp|woff|woff2)$)([^.]+$)/>",
+            "Target": "/index.html",
+            "Status": "200"
+          }
+        ],
+        "Tags": [{ "Key": "Project", "Value": "jm-office" }]
+      }
+    },
+    "Branch": {
+      "Type": "AWS::Amplify::Branch",
+      "Properties": {
+        "AppId": { "Fn::GetAtt": ["App", "AppId"] },
+        "BranchName": { "Ref": "DeployBranch" },
+        "Stage": "PRODUCTION",
+        "EnableAutoBuild": false,
+        "Tags": [{ "Key": "Project", "Value": "jm-office" }]
+      }
+    },
+    "Domain": {
+      "Type": "AWS::Amplify::Domain",
+      "Properties": {
+        "AppId": { "Fn::GetAtt": ["App", "AppId"] },
+        "DomainName": { "Ref": "WebDomain" },
+        "EnableAutoSubDomain": false,
+        "SubDomainSettings": [{ "Prefix": "", "BranchName": { "Fn::GetAtt": ["Branch", "BranchName"] } }]
+      }
+    },
+    "DeployRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": { "Fn::Sub": "jm-office-web-github-deploy-${AWS::Region}" },
+        "Description": "Assumed by the frontend repo's GitHub Actions (OIDC) to publish builds to Amplify",
+        "MaxSessionDuration": 3600,
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Federated": { "Fn::ImportValue": "github-oidc-ProviderArn" } },
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                  "token.actions.githubusercontent.com:sub": { "Fn::Sub": "repo:${GitHubRepo}:ref:refs/heads/${DeployBranch}" }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "jm-office-web-deploy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "ReadStackOutputs",
+                  "Effect": "Allow",
+                  "Action": "cloudformation:DescribeStacks",
+                  "Resource": { "Ref": "AWS::StackId" }
+                },
+                {
+                  "Sid": "PublishToBranch",
+                  "Effect": "Allow",
+                  "Action": ["amplify:CreateDeployment", "amplify:StartDeployment", "amplify:GetJob"],
+                  "Resource": [
+                    { "Fn::Sub": "${Branch.Arn}" },
+                    { "Fn::Sub": "${Branch.Arn}/jobs/*" }
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [{ "Key": "Project", "Value": "jm-office" }]
+      }
+    }
+  },
+  "Outputs": {
+    "AppId": { "Value": { "Fn::GetAtt": ["App", "AppId"] } },
+    "BranchName": { "Value": { "Fn::GetAtt": ["Branch", "BranchName"] } },
+    "DefaultUrl": { "Value": { "Fn::Sub": "https://${Branch.BranchName}.${App.DefaultDomain}" } },
+    "SiteUrl": { "Value": { "Fn::Sub": "https://${WebDomain}" } },
+    "DeployRoleArn": {
+      "Description": "Set as the frontend repo variable AWS_DEPLOY_ROLE_ARN",
+      "Value": { "Fn::GetAtt": ["DeployRole", "Arn"] }
+    }
+  }
+}

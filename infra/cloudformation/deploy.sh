@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy one JM Office CloudFormation stack from your machine.
 #
-#   ./infra/cloudformation/deploy.sh <github-oidc|dns|data|auth|server>
+#   ./infra/cloudformation/deploy.sh <github-oidc|dns|data|auth|server|web>
 #   ./infra/cloudformation/deploy.sh ami        # print the current Ubuntu 26.04 amd64 AMI
 #
 # AWS_PROFILE defaults to jmplutouser2 and AWS_REGION to us-east-2.
@@ -12,7 +12,7 @@ cd "$(dirname "$0")"
 
 export AWS_PROFILE="${AWS_PROFILE:-jmplutouser2}"
 export AWS_REGION="${AWS_REGION:-us-east-2}"
-name="${1:?usage: deploy.sh <github-oidc|dns|data|auth|server|ami>}"
+name="${1:?usage: deploy.sh <github-oidc|dns|data|auth|server|web|ami>}"
 
 if [ "$name" = ami ]; then
   aws ssm get-parameter \
@@ -23,7 +23,7 @@ fi
 
 case "$name" in
   github-oidc) stack=github-oidc ;;
-  dns | data | auth | server) stack="jm-office-$name" ;;
+  dns | data | auth | server | web) stack="jm-office-$name" ;;
   *) echo "Unknown stack: $name" >&2; exit 1 ;;
 esac
 

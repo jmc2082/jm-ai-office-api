@@ -1,8 +1,8 @@
 # Phase 0c: CloudFormation plan for the EC2 box
 
 Created: 2026-11-05
-Status: Templates written and validated (cfn-lint + `aws cloudformation validate-template`).
-Nothing has been deployed yet.
+Status: Deployed 2026-11-06/07. API live at https://api.office.wikiboost.com, dashboard at
+https://office.wikiboost.com (Amplify, published by the frontend repo's GitHub Actions).
 
 One EC2 instance runs Caddy, the NestJS API and Litestream in Docker, with SQLite on its
 disk. All of it is CloudFormation (JSON), deployed with the AWS CLI. The files are in
@@ -67,6 +67,7 @@ DNS, backups or users.
 | `jm-office-data` | `data.json` | S3 bucket `jm-office-<account>-us-east-2` (`litestream/` + `releases/`, versioned, private, Retain), ECR repo `jm-office-api` (immutable tags, keeps the last 10), budget |
 | `jm-office-auth` | `auth.json` | Cognito user pool (admin-created users only, deletion protection) + SPA client (SRP, no secret). Writes `COGNITO_*` to SSM. |
 | `jm-office-server` | `server.json` | VPC/subnet/IGW, security group (80, 443 only), instance role, EC2 + bootstrap, Elastic IP, `api.` A record, app settings in SSM, `jm-office-deploy` SSM document, GitHub deploy role |
+| `jm-office-web` | `web.json` | Amplify app `jm-office-web` (no Git connection; SPA rewrite), branch `main`, custom domain `office.wikiboost.com` (Amplify adds the Route 53 records and certificate itself), and the deploy role for the frontend repo's GitHub Actions |
 
 **Why auth comes before server:** the API refuses to start in production without
 `COGNITO_USER_POOL_ID` and `COGNITO_CLIENT_ID` (`AUTH_DISABLED` is blocked there), so those
