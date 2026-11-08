@@ -12,7 +12,7 @@
     "ImageId": "ami-0e1011556f696c3d3",
     "RootVolumeSize": "20",
     "ApiDomain": "api.office.wikiboost.com",
-    "AiMode": "mock",
+    "AiMode": "live",
     "CorsOrigins": "https://office.wikiboost.com",
     "QueueConcurrency": "1",
     "GitHubRepo": "jmc2082@4621380/jm-ai-office-api@1447367200",
