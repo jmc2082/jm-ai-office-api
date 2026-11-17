@@ -19,6 +19,8 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/drizzle ./drizzle
+# Wiki pages served at /api/wiki (dashboard's Wiki section).
+COPY --from=build /app/docs ./docs
 COPY package.json ./
 RUN mkdir -p /data && chown node:node /data
 USER node

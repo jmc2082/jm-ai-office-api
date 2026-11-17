@@ -5,6 +5,7 @@ import {
   real,
   sqliteTable,
   text,
+  uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 
 // Timestamps are stored as epoch milliseconds.
@@ -138,7 +139,87 @@ export const events = sqliteTable(
   ],
 );
 
+// ── Inbox triage ────────────────────────────────────────────────────────────
+
+export const MAIL_PROVIDERS = ['gmail', 'microsoft'] as const;
+export const MAILBOX_STATUSES = ['active', 'needs_reauth'] as const;
+export const MAIL_VERDICTS = [
+  'needs_attention',
+  'fyi',
+  'newsletter',
+  'likely_spam',
+  'phishing',
+] as const;
+export const MAIL_DECIDERS = ['rules', 'model', 'fallback'] as const;
+
+export type MailProviderKind = (typeof MAIL_PROVIDERS)[number];
+export type MailboxStatus = (typeof MAILBOX_STATUSES)[number];
+export type MailVerdict = (typeof MAIL_VERDICTS)[number];
+export type MailDecider = (typeof MAIL_DECIDERS)[number];
+
+/** A connected mailbox. The refresh token is AES-GCM encrypted (MAIL_TOKEN_KEY). */
+export const mailboxes = sqliteTable(
+  'mailboxes',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    provider: text('provider', { enum: MAIL_PROVIDERS }).notNull(),
+    address: text('address').notNull(),
+    label: text('label'), // e.g. "personal", "work"
+    refreshTokenEnc: text('refresh_token_enc').notNull(),
+    // Gmail historyId or Graph deltaLink; null = not synced yet
+    cursor: text('cursor'),
+    status: text('status', { enum: MAILBOX_STATUSES })
+      .notNull()
+      .default('active'),
+    lastSyncedAt: integer('last_synced_at', { mode: 'timestamp_ms' }),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('mailboxes_provider_address_idx').on(t.provider, t.address),
+  ],
+);
+
+/** One triaged email. Only metadata and a short snippet are kept, never the body. */
+export const mailMessages = sqliteTable(
+  'mail_messages',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    mailboxId: integer('mailbox_id')
+      .notNull()
+      .references(() => mailboxes.id, { onDelete: 'cascade' }),
+    providerMessageId: text('provider_message_id').notNull(),
+    runId: integer('run_id').references(() => runs.id),
+    cardId: integer('card_id').references(() => cards.id),
+    fromAddress: text('from_address').notNull(),
+    fromName: text('from_name'),
+    subject: text('subject').notNull().default(''),
+    snippet: text('snippet').notNull().default(''),
+    receivedAt: integer('received_at', { mode: 'timestamp_ms' }).notNull(),
+    verdict: text('verdict', { enum: MAIL_VERDICTS }).notNull(),
+    topic: text('topic'),
+    confidence: real('confidence'),
+    reason: text('reason').notNull().default(''),
+    decidedBy: text('decided_by', { enum: MAIL_DECIDERS }).notNull(),
+    signals: text('signals', { mode: 'json' }).$type<Record<string, unknown>>(),
+    link: text('link'),
+    // Set once the message has been listed in a daily digest card
+    digestedAt: integer('digested_at', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('mail_messages_mailbox_msg_idx').on(
+      t.mailboxId,
+      t.providerMessageId,
+    ),
+    index('mail_messages_verdict_idx').on(t.verdict),
+    index('mail_messages_created_idx').on(t.createdAt),
+  ],
+);
+
 export type Worker = typeof workers.$inferSelect;
 export type Run = typeof runs.$inferSelect;
 export type Card = typeof cards.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
+export type Mailbox = typeof mailboxes.$inferSelect;
+export type MailMessageRow = typeof mailMessages.$inferSelect;

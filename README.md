@@ -63,6 +63,7 @@ from the UI and are never overwritten by code.
 | GET | `/api/cards?status=open` / `/api/cards/:id` | |
 | POST | `/api/cards/:id/approve` / `reject` | `{ note? }` |
 | GET | `/api/events` / `/api/events/stream` | History / live SSE (`event` and `ping` messages) |
+| GET | `/api/wiki` / `/api/wiki/:slug` | Page list / one page's markdown from `docs/wiki-docs/` (shown in the dashboard's Wiki) |
 
 `since` lets the browser define "today" as its own local midnight.
 

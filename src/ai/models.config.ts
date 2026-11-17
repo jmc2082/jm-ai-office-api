@@ -45,6 +45,13 @@ export const MODEL_TASKS = {
     promptVersion: 'v1',
     mode: 'realtime',
   },
+  'fun.joke': {
+    model: 'claude-haiku-5-5',
+    maxTokens: 512,
+    effort: 'low',
+    promptVersion: 'v1',
+    mode: 'realtime',
+  },
   'inbox.classify': {
     model: 'claude-haiku-5-5',
     maxTokens: 256,

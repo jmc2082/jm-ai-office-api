@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { QueueService } from '../src/queue/queue.service.js';
+import { JokeOfTheDayWorker } from '../src/workers/joke-of-the-day/joke-of-the-day.worker.js';
 
 describe('Office (e2e)', () => {
   let app: INestApplication;
@@ -43,6 +44,8 @@ describe('Office (e2e)', () => {
     expect(res.body.map((w: { slug: string }) => w.slug).sort()).toEqual([
       'hello-reviewer',
       'hello-world',
+      'inbox-triage',
+      'joke-of-the-day',
     ]);
   });
 
@@ -119,5 +122,42 @@ describe('Office (e2e)', () => {
       .patch('/api/workers/hello-world')
       .send({ schedule: '* * * * *' })
       .expect(400);
+  });
+
+  it('serves the wiki from docs/wiki-docs', async () => {
+    const list = await request(app.getHttpServer())
+      .get('/api/wiki')
+      .expect(200);
+    expect(list.body[0]).toEqual({ slug: 'home', title: expect.any(String) });
+    const page = await request(app.getHttpServer())
+      .get('/api/wiki/managing-workers')
+      .expect(200);
+    expect(page.body.markdown).toContain('# Managing workers');
+    await request(app.getHttpServer()).get('/api/wiki/..%2FREADME').expect(404);
+  });
+
+  it('posts a joke to the feed and remembers it to avoid repeats', async () => {
+    const server = app.getHttpServer();
+    for (const topic of ['coffee', 'meetings']) {
+      await request(server)
+        .post('/api/workers/joke-of-the-day/run')
+        .send({ input: { topic } })
+        .expect(201);
+      await queue.onIdle();
+    }
+
+    const runs = (await request(server).get('/api/runs').expect(200)).body;
+    expect(runs.slice(0, 2).map((r: { status: string }) => r.status)).toEqual([
+      'ok',
+      'ok',
+    ]);
+
+    const worker = (
+      await request(server).get('/api/workers').expect(200)
+    ).body.find((w: { slug: string }) => w.slug === 'joke-of-the-day');
+    const jokes = app.get(JokeOfTheDayWorker).recentJokes(worker.id);
+    expect(jokes).toHaveLength(2);
+    expect(jokes[0]).toContain('meetings'); // newest first
+    expect(jokes[0]).toContain('Do not repeat'); // mock echoes the prompt, so the first joke was passed in
   });
 });
